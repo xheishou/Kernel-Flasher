@@ -23,6 +23,8 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 
 public class MainActivity extends Activity {
 
@@ -87,73 +89,104 @@ public class MainActivity extends Activity {
     }
 
     private void flashKernel(Uri uri) {
-        try {
-            InputStream inputStream = getContentResolver().openInputStream(uri);
-            if (inputStream != null) {
-                File dir = getDir("temp", Context.MODE_PRIVATE);
-                String dirPath = dir.getAbsolutePath();
+		try {
+			InputStream inputStream = getContentResolver().openInputStream(uri);
+			if (inputStream != null) {
+				String fileName = getFileNameFromUri(uri);
+				File dir = getDir("temp", Context.MODE_PRIVATE);
+				String dirPath = dir.getAbsolutePath();
 
-                // 判断如果是zip文件则解压缩，否则直接复制到临时目录
-                String fileName = getFileNameFromUri(uri);
-                if (fileName.endsWith(".zip")) {
-                    ZipInputStream zipInputStream = new ZipInputStream(inputStream);
-                    ZipEntry entry;
-                    while ((entry = zipInputStream.getNextEntry()) != null) {
-                        String entryName = entry.getName();
-                        if (entry.isDirectory()) {
-                            // 如果是目录则创建对应目录
-                            File subDir = new File(dirPath + File.separator + entryName);
-                            subDir.mkdir();
-                        } else {
-                            // 如果是文件则写入到临时文件中
-                            File file = new File(dirPath + File.separator + entryName);
-                            FileOutputStream outputStream = new FileOutputStream(file);
-                            byte[] buffer = new byte[1024];
-                            int length;
-                            while ((length = zipInputStream.read(buffer)) != -1) {
-                                outputStream.write(buffer, 0, length);
-                            }
-                            outputStream.close();
-                        }
-                    }
+				// 判断文件类型
+				if (fileName.endsWith(".zip")) {
+					// 如果是ZIP文件，解压缩到临时目录
+					ZipInputStream zipInputStream = new ZipInputStream(inputStream);
+					extractZip(zipInputStream, dirPath);
+					zipInputStream.close();
 
-                    zipInputStream.close();
-                } else {
-                    File destFile = new File(dirPath + File.separator + fileName);
-                    copyToFile(inputStream, destFile);
-                }
+					// 获取anykernel.sh和Image.gz-dtb或Image.gz文件
+					File anykernelFile = new File(dirPath + File.separator + "anykernel.sh");
+					File imageFile = new File(dirPath + File.separator + "Image.gz-dtb");
+					if (!imageFile.exists()) {
+						imageFile = new File(dirPath + File.separator + "Image.gz");
+					}
 
-                // 获取anykernel.sh和Image.gz-dtb或Image.gz文件
-                File anykernelFile = new File(dirPath + File.separator + "anykernel.sh");
-                File imageFile = new File(dirPath + File.separator + "Image.gz-dtb");
-                if (!imageFile.exists()) {
-                    imageFile = new File(dirPath + File.separator + "Image.gz");
-                }
+					if (anykernelFile.exists() && imageFile.exists()) {
+						// 使用su命令刷入内核
+						String[] commands = {
+							"su",
+							"sh " + anykernelFile.getAbsolutePath() + " " + imageFile.getAbsolutePath()
+						};
+						Process process = Runtime.getRuntime().exec(commands);
+						process.waitFor();
+						if (process.exitValue() == 0) {
+							showToast("Kernel flashed successfully!");
+						} else {
+							showToast("Failed to flash kernel.");
+						}
+					} else {
+						showToast("Invalid kernel package.");
+					}
 
-                if (anykernelFile.exists() && imageFile.exists()) {
-                    String[] commands = {
-						"su",
-						"sh " + anykernelFile.getAbsolutePath() + " " + imageFile.getAbsolutePath()
-                    };
-                    Process process = Runtime.getRuntime().exec(commands);
-                    process.waitFor();
-                    if (process.exitValue() == 0) {
-                        showToast("Kernel flashed successfully!");
-                    } else {
-                        showToast("Failed to flash kernel.");
-                    }
-                } else {
-                    showToast("Invalid kernel package.");
-                }
+					// 删除临时文件和目录
+					deleteFileOrDirectory(dir);
+				} else if (fileName.endsWith(".img")) {
+					// 如果是IMG文件，使用fastboot命令刷入
+					File destFile = new File(dirPath + File.separator + fileName);
+					copyToFile(inputStream, destFile);
 
-                // 删除临时文件和目录
-                deleteFileOrDirectory(dir);
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-            showToast("Error flashing kernel: " + e.getMessage());
-        }
-    }
+					// 检查设备是否支持fastboot
+					Process process = Runtime.getRuntime().exec("adb devices");
+					String output = new String();
+					BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+					String line;
+					while ((line = reader.readLine()) != null) {
+						output += line;
+					}
+					reader.close();
+					if (!output.contains("fastboot")) {
+						showToast("Fastboot is not supported on this device.");
+						return;
+					}
+
+					// 执行fastboot命令刷入IMG文件
+					String command = "adb reboot bootloader && adb flash boot " + destFile.getAbsolutePath();
+					process = Runtime.getRuntime().exec(command);
+					int exitValue = process.waitFor();
+					if (exitValue == 0) {
+						showToast("Kernel flashed successfully!");
+					} else {
+						showToast("Failed to flash kernel.");
+					}
+				} else {
+					showToast("Unsupported file format.");
+				}
+			}
+		} catch (Exception e) {
+			e.printStackTrace();
+			showToast("Error flashing kernel: " + e.getMessage());
+		}
+	}
+
+// 添加的辅助方法，用于解压缩ZIP文件
+	private void extractZip(ZipInputStream zipInputStream, String dirPath) throws IOException {
+		ZipEntry entry;
+		while ((entry = zipInputStream.getNextEntry()) != null) {
+			String entryName = entry.getName();
+			if (entry.isDirectory()) {
+				File subDir = new File(dirPath + File.separator + entryName);
+				subDir.mkdir();
+			} else {
+				File file = new File(dirPath + File.separator + entryName);
+				FileOutputStream outputStream = new FileOutputStream(file);
+				byte[] buffer = new byte[1024];
+				int length;
+				while ((length = zipInputStream.read(buffer)) != -1) {
+					outputStream.write(buffer, 0, length);
+				}
+				outputStream.close();
+			}
+		}
+	}
 
     private String getFileNameFromUri(Uri uri) {
         String result = null;

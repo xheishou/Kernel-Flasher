@@ -23,4 +23,6 @@ android {
 dependencies {
     implementation fileTree(dir: "libs", include: ["*.jar"])
 	implementation 'androidx.core:core:1.7.0'
+	implementation 'androidx.cardview:cardview:1.0.0'
+
 }
